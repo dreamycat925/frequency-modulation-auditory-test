@@ -33,6 +33,14 @@ sr = st.sidebar.number_input("サンプリング周波数 (Hz)", 8000, 48000, 44
 freq = st.sidebar.number_input("キャリア周波数 (Hz)", 200, 4000, 500, 100)
 dur_ms = st.sidebar.number_input("音の長さ (ms)", 100, 4000, 1000, 100)
 
+# 出力チャネル（両耳 / 左耳のみ / 右耳のみ）
+ear = st.sidebar.radio(
+    "出力チャネル",
+    ["両耳", "左耳のみ", "右耳のみ"],
+    index=0,
+    help="CFTと同様に、FM刺激を両耳・左耳のみ・右耳のみのいずれかに出力します。",
+)
+
 st.sidebar.markdown("### FM周波数（推奨設定＋任意変更）")
 
 # 初期値を 2 Hz にしておく
@@ -92,8 +100,12 @@ def generate_fm_tone(
     fm_hz: float,
     depth: float,
     with_fm: bool,
+    ear: str,
 ) -> bytes:
-    """FMあり／なしの単音を生成して16-bit WAVバイト列を返す。"""
+    """
+    FMあり／なしの単音を生成して16-bit WAVバイト列を返す。
+    ear: "両耳" / "左耳のみ" / "右耳のみ"
+    """
     n_samples = int(sr * dur_ms / 1000)
     if n_samples <= 0:
         n_samples = 1
@@ -119,15 +131,31 @@ def generate_fm_tone(
         max_abs = 1.0
     tone = tone / max_abs
 
-    # 16-bit PCM に変換
+    # 16-bit PCM モノラル
     audio = (tone * 32767).astype(np.int16)
+
+    # ステレオ化：耳条件に応じて L/R を振り分け
+    if ear == "左耳のみ":
+        left = audio
+        right = np.zeros_like(audio)
+    elif ear == "右耳のみ":
+        left = np.zeros_like(audio)
+        right = audio
+    else:  # 両耳
+        left = audio
+        right = audio
+
+    # L/Rをインターリーブしてステレオ配列に
+    stereo = np.empty(2 * len(audio), dtype=np.int16)
+    stereo[0::2] = left
+    stereo[1::2] = right
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
+        wf.setnchannels(2)          # ステレオ
+        wf.setsampwidth(2)          # 16-bit
         wf.setframerate(sr)
-        wf.writeframes(audio.tobytes())
+        wf.writeframes(stereo.tobytes())
     return buf.getvalue()
 
 
@@ -141,7 +169,8 @@ st.write(
         - **ランダム**：FMあり／なしのどちらか一方をランダムに提示  
 
         現在のFM周波数設定：**{fm_hz:.1f} Hz**  
-        現在の変調深度：**depth = {depth:.2f}（≈ ±{depth*100:.0f}％）**
+        現在の変調深度：**depth = {depth:.2f}（≈ ±{depth*100:.0f}％）**  
+        出力チャネル：**{ear}**
         """
     )
 )
@@ -153,12 +182,12 @@ if "last_random_label" not in st.session_state:
 
 with col1:
     if st.button("🎵 FMなし（フラット）"):
-        wav_bytes = generate_fm_tone(sr, freq, dur_ms, fm_hz, depth, with_fm=False)
+        wav_bytes = generate_fm_tone(sr, freq, dur_ms, fm_hz, depth, with_fm=False, ear=ear)
         st.audio(wav_bytes, format="audio/wav", autoplay=True)
 
 with col2:
     if st.button("🎵 FMあり（変調）"):
-        wav_bytes = generate_fm_tone(sr, freq, dur_ms, fm_hz, depth, with_fm=True)
+        wav_bytes = generate_fm_tone(sr, freq, dur_ms, fm_hz, depth, with_fm=True, ear=ear)
         st.audio(wav_bytes, format="audio/wav", autoplay=True)
 
 with col3:
@@ -168,7 +197,7 @@ with col3:
         with_fm = bool(random.getrandbits(1))
         label = "FMあり" if with_fm else "FMなし"
         st.session_state["last_random_label"] = label
-        wav_bytes = generate_fm_tone(sr, freq, dur_ms, fm_hz, depth, with_fm=with_fm)
+        wav_bytes = generate_fm_tone(sr, freq, dur_ms, fm_hz, depth, with_fm=with_fm, ear=ear)
         st.audio(wav_bytes, format="audio/wav", autoplay=True)
 
 st.info(f"直近のランダム刺激：**{st.session_state['last_random_label']}**（検査者用メモ）")
@@ -181,16 +210,17 @@ st.markdown(
 
 - **練習**：  
   まず depth = 0.30〜0.50 で「FMなし」「FMあり」を交互に聞かせて、  
-  患者さんに「揺れている感じ」を体験してもらいます。
+  患者さんに「揺れている感じ」を体験してもらいます。  
+  両耳 → 左耳のみ → 右耳のみ の順で聞き比べてもらうと、違和感の側を患者さん自身が報告しやすくなります。
 
 - **閾値のざっくり推定**：  
   depth を 0.10 → 0.05 → 0.03 → 0.02 … と小さくしていき、  
-  「一貫してFMありを区別できる最小のdepth」をメモしておくと良いです。
+  「一貫してFMありを区別できる最小のdepth」を耳別（左／右）にメモしておくと良いです。
 
-- **2 Hz / 40 Hz の比較**：  
-  サイドバーの **2 Hz / 40 Hz ボタン**で周波数を切り替え、  
-  それぞれで必要な depth（例：2 Hz は 0.02、40 Hz は 0.05 など）を比較すると、  
-  Grube et al. (2016) に近い解釈ができます。
+- **2 Hz / 40 Hz × 耳別の比較**：  
+  サイドバーの **2 Hz / 40 Hz ボタン**と「出力チャネル」を切り替え、  
+  2 Hz / 40 Hz × 左耳 / 右耳 のそれぞれで必要な depth を比較すると、  
+  片側の皮質聴覚障害やPPAサブタイプとの対応を検討しやすくなります。
 
 ※ 本アプリは **簡易スクリーニング／研究用プロトタイプ** です。  
   臨床での正式運用の際は、別途、手続き・スコアリング方法を標準化してください。
