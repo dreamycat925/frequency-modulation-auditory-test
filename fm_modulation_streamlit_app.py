@@ -27,28 +27,28 @@ Grube et al. (2016) の **2 Hz / 40 Hz FM 検出課題**を参考にした **FM�
 """
 )
 
-st.sidebar.header("⚙️ パラメータ設定")
+st.markdown("## ⚙️ パラメータ設定")
 
-sr = st.sidebar.number_input("サンプリング周波数 (Hz)", 8000, 48000, 44100, 1000)
-freq = st.sidebar.number_input("キャリア周波数 (Hz)", 200, 4000, 500, 100)
-dur_ms = st.sidebar.number_input("音の長さ (ms)", 100, 4000, 1000, 100)
+sr = st.number_input("サンプリング周波数 (Hz)", 8000, 48000, 44100, 1000)
+freq = st.number_input("キャリア周波数 (Hz)", 200, 4000, 500, 100)
+dur_ms = st.number_input("音の長さ (ms)", 100, 4000, 1000, 100)
 
 # 出力チャネル（両耳 / 左耳のみ / 右耳のみ）
-ear = st.sidebar.radio(
+ear = st.radio(
     "出力チャネル",
     ["両耳", "左耳のみ", "右耳のみ"],
     index=0,
     help="CFTと同様に、FM刺激を両耳・左耳のみ・右耳のみのいずれかに出力します。",
 )
 
-st.sidebar.markdown("### FM周波数（推奨設定＋任意変更）")
+st.markdown("### FM周波数（推奨設定＋任意変更）")
 
 # 初期値を 2 Hz にしておく
 if "fm_hz" not in st.session_state:
     st.session_state["fm_hz"] = 2.0
 
 # 推奨ボタン（2 Hz / 40 Hz）
-bcol1, bcol2 = st.sidebar.columns(2)
+bcol1, bcol2 = st.columns(2)
 with bcol1:
     if st.button("2 Hzに設定"):
         st.session_state["fm_hz"] = 2.0
@@ -57,32 +57,47 @@ with bcol2:
         st.session_state["fm_hz"] = 40.0
 
 # スライダーでいつでも上書き可能
-fm_hz = st.sidebar.slider(
+fm_hz = st.slider(
     "変調周波数 FM (Hz)",
-    0.5,
-    100.0,
-    key="fm_hz",
-    help="2 Hz / 40 Hz が文献上よく用いられますが、任意の値に変更できます。",
+    min_value=0.5,
+    max_value=50.0,
+    value=st.session_state["fm_hz"],
+    step=0.1,
+    help="2 Hz（ゆっくりした揺れ）〜 40 Hz（粗い揺れ）あたりを主に使用します。",
 )
+st.session_state["fm_hz"] = fm_hz
 
 # depth を離散メモリで指定（0.01〜0.10, 0.20, 0.30, 0.40, 0.50）
-depth_options = [0.01, 0.02, 0.03, 0.04, 0.05,
-                 0.06, 0.07, 0.08, 0.09, 0.10,
-                 0.20, 0.30, 0.40, 0.50]
+depth_options = [
+    0.01,
+    0.02,
+    0.03,
+    0.04,
+    0.05,
+    0.06,
+    0.07,
+    0.08,
+    0.09,
+    0.10,
+    0.20,
+    0.30,
+    0.40,
+    0.50,
+]
 
 if "depth" not in st.session_state:
     # デフォルトはやや大きめ（0.30 = 30％）
     st.session_state["depth"] = 0.30
 
-depth = st.sidebar.select_slider(
+depth = st.select_slider(
     "変調深度 depth（Δf/f）",
     options=depth_options,
     value=st.session_state["depth"],
     key="depth",
-    help="キャリア周波数に対する揺れの割合です（例：0.02 = ±2％, 0.10 = ±10％, 0.50 = ±50％）。"
+    help="キャリア周波数に対する揺れの割合です（例：0.02 = ±2％, 0.10 = ±10％, 0.50 = ±50％）。",
 )
 
-st.sidebar.markdown(
+st.markdown(
     """
 **コメント**
 - **0.01〜0.10**：1〜10％の揺れ（既報の閾値は多くがこの範囲）  
@@ -109,30 +124,20 @@ def generate_fm_tone(
     n_samples = int(sr * dur_ms / 1000)
     if n_samples <= 0:
         n_samples = 1
-    t = np.arange(n_samples) / sr
 
-    if with_fm and fm_hz > 0 and depth > 0:
-        # 即時周波数：f(t) = f0 * (1 + depth * sin(2π fm t))
-        inst_freq = freq * (1.0 + depth * np.sin(2.0 * np.pi * fm_hz * t))
-        # phi[n] = phi[n-1] + 2π * f[n] / sr
-        phase = 2.0 * np.pi * np.cumsum(inst_freq) / sr
-        tone = np.sin(phase)
+    t = np.linspace(0, dur_ms / 1000, n_samples, endpoint=False)
+
+    if with_fm:
+        # 周波数変調：f(t) = f_c * (1 + depth * sin(2π f_m t))
+        # 位相φ(t) = 2π ∫ f(t) dt を数値積分で近似
+        freq_inst = freq * (1 + depth * np.sin(2 * np.pi * fm_hz * t))
+        phase = 2 * np.pi * np.cumsum(freq_inst) / sr
+        audio = np.sin(phase)
     else:
-        tone = np.sin(2.0 * np.pi * freq * t)
+        audio = np.sin(2 * np.pi * freq * t)
 
-    # 短いHann窓で前後を丸めてクリックを軽減
-    if n_samples > 3:
-        window = np.hanning(n_samples)
-        tone *= window
-
-    # 正規化（最大振幅=1）
-    max_abs = np.max(np.abs(tone))
-    if max_abs < 1e-9:
-        max_abs = 1.0
-    tone = tone / max_abs
-
-    # 16-bit PCM モノラル
-    audio = (tone * 32767).astype(np.int16)
+    # 0.8で適当に音量を調整して16-bit整数に
+    audio = (0.8 * audio * 32767).astype(np.int16)
 
     # ステレオ化：耳条件に応じて L/R を振り分け
     if ear == "左耳のみ":
@@ -150,10 +155,11 @@ def generate_fm_tone(
     stereo[0::2] = left
     stereo[1::2] = right
 
+    # WAVに書き出してバイナリとして返す
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
-        wf.setnchannels(2)          # ステレオ
-        wf.setsampwidth(2)          # 16-bit
+        wf.setnchannels(2)
+        wf.setsampwidth(2)  # 16-bit
         wf.setframerate(sr)
         wf.writeframes(stereo.tobytes())
     return buf.getvalue()
@@ -206,19 +212,19 @@ st.markdown(
     """
 ---
 
-### 🔎 推奨の使い方（例）
+## 推奨の使い方（例）
 
-- **練習**：  
+- **練習**：
   まず depth = 0.30〜0.50 で「FMなし」「FMあり」を交互に聞かせて、  
   患者さんに「揺れている感じ」を体験してもらいます。  
-  両耳 → 左耳のみ → 右耳のみ の順で聞き比べてもらうと、違和感の側を患者さん自身が報告しやすくなります。
+  両耳 → 左耳のみ → 右耳のみ の順で聞き比べてもらうと、連続周囲の患者さん自身が報告しやすくなります。
 
 - **閾値のざっくり推定**：  
   depth を 0.10 → 0.05 → 0.03 → 0.02 … と小さくしていき、  
   「一貫してFMありを区別できる最小のdepth」を耳別（左／右）にメモしておくと良いです。
 
 - **2 Hz / 40 Hz × 耳別の比較**：  
-  サイドバーの **2 Hz / 40 Hz ボタン**と「出力チャネル」を切り替え、  
+  画面上部の **2 Hz / 40 Hz ボタン**と「出力チャネル」を切り替え、  
   2 Hz / 40 Hz × 左耳 / 右耳 のそれぞれで必要な depth を比較すると、  
   片側の皮質聴覚障害やPPAサブタイプとの対応を検討しやすくなります。
 
